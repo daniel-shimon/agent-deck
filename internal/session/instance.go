@@ -430,11 +430,21 @@ func (i *Instance) buildClaudeExtraFlags(opts *ClaudeOptions) string {
 
 	// Options-level flags
 	if opts != nil {
-		if opts.SkipPermissions {
-			flags = append(flags, "--dangerously-skip-permissions")
-		}
 		if opts.UseChrome {
 			flags = append(flags, "--chrome")
+		}
+	}
+
+	// Permission flags are read from live config (global settings, not per-session)
+	if userConfig, err := LoadUserConfig(); err == nil && userConfig != nil {
+		// --dangerously-skip-permissions wins over --allow-dangerously-skip-permissions
+		if userConfig.Claude.GetDangerousMode() {
+			flags = append(flags, "--dangerously-skip-permissions")
+		} else if userConfig.Claude.AllowDangerousMode {
+			flags = append(flags, "--allow-dangerously-skip-permissions")
+		}
+		if userConfig.Claude.PermissionMode != "" {
+			flags = append(flags, "--permission-mode", userConfig.Claude.PermissionMode)
 		}
 	}
 
@@ -2562,10 +2572,14 @@ func (i *Instance) buildClaudeResumeCommand() string {
 		configDirPrefix = fmt.Sprintf("CLAUDE_CONFIG_DIR=%s ", configDir)
 	}
 
-	// Check if dangerous mode is enabled in user config
+	// Check permission settings from user config
 	dangerousMode := false
+	allowDangerousMode := false
+	permissionMode := ""
 	if userConfig, err := LoadUserConfig(); err == nil && userConfig != nil {
 		dangerousMode = userConfig.Claude.GetDangerousMode()
+		allowDangerousMode = userConfig.Claude.AllowDangerousMode
+		permissionMode = userConfig.Claude.PermissionMode
 	}
 
 	// Check if session has actual conversation data
@@ -2573,22 +2587,30 @@ func (i *Instance) buildClaudeResumeCommand() string {
 	useResume := sessionHasConversationData(i.ClaudeSessionID, i.ProjectPath)
 	sessionLog.Debug("session_data_build_resume", slog.String("session_id", i.ClaudeSessionID), slog.String("path", i.ProjectPath), slog.Bool("use_resume", useResume))
 
-	// Build dangerous mode flag
+	// Build dangerous mode flag (--dangerously-skip-permissions wins over --allow-...)
 	dangerousFlag := ""
 	if dangerousMode {
 		dangerousFlag = " --dangerously-skip-permissions"
+	} else if allowDangerousMode {
+		dangerousFlag = " --allow-dangerously-skip-permissions"
+	}
+
+	// Build permission mode flag (after dangerous mode)
+	permissionFlag := ""
+	if permissionMode != "" {
+		permissionFlag = fmt.Sprintf(" --permission-mode %s", permissionMode)
 	}
 
 	// Build the command with tmux environment update
 	// This ensures CLAUDE_SESSION_ID is set in tmux env after restart,
 	// so GetSessionIDFromTmux() works correctly and detects the session
 	if useResume {
-		return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s && %s%s --resume %s%s",
-			i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+		return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s && %s%s --resume %s%s%s",
+			i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag, permissionFlag)
 	}
 	// Session was never interacted with - use --session-id to create fresh session
-	return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s && %s%s --session-id %s%s",
-		i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag)
+	return fmt.Sprintf("tmux set-environment CLAUDE_SESSION_ID %s && %s%s --session-id %s%s%s",
+		i.ClaudeSessionID, configDirPrefix, claudeCmd, i.ClaudeSessionID, dangerousFlag, permissionFlag)
 }
 
 // SetGeminiModel sets the Gemini model for this session and triggers a restart if running.
