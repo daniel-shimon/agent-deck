@@ -572,6 +572,90 @@ max_shown = 8
 	}
 }
 
+// ============================================================================
+// Claude Permission Settings Tests
+// ============================================================================
+
+func TestGetDangerousMode_DefaultFalse(t *testing.T) {
+	// nil pointer should default to false
+	cs := &ClaudeSettings{}
+	if cs.GetDangerousMode() {
+		t.Error("GetDangerousMode should default to false when nil")
+	}
+}
+
+func TestGetDangerousMode_ExplicitTrue(t *testing.T) {
+	v := true
+	cs := &ClaudeSettings{DangerousMode: &v}
+	if !cs.GetDangerousMode() {
+		t.Error("GetDangerousMode should return true when explicitly set")
+	}
+}
+
+func TestGetDangerousMode_ExplicitFalse(t *testing.T) {
+	v := false
+	cs := &ClaudeSettings{DangerousMode: &v}
+	if cs.GetDangerousMode() {
+		t.Error("GetDangerousMode should return false when explicitly set")
+	}
+}
+
+func TestClaudePermissionSettings_TOML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configContent := `
+[claude]
+dangerous_mode = false
+allow_dangerous_mode = true
+permission_mode = "plan"
+`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if config.Claude.GetDangerousMode() {
+		t.Error("Expected dangerous_mode false")
+	}
+	if !config.Claude.AllowDangerousMode {
+		t.Error("Expected allow_dangerous_mode true")
+	}
+	if config.Claude.PermissionMode != "plan" {
+		t.Errorf("Expected permission_mode 'plan', got %q", config.Claude.PermissionMode)
+	}
+}
+
+func TestClaudePermissionSettings_Defaults(t *testing.T) {
+	// No [claude] section — all fields should be zero/default
+	tmpDir := t.TempDir()
+	configContent := `default_tool = "claude"`
+	configPath := filepath.Join(tmpDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	var config UserConfig
+	_, err := toml.DecodeFile(configPath, &config)
+	if err != nil {
+		t.Fatalf("Failed to decode: %v", err)
+	}
+
+	if config.Claude.GetDangerousMode() {
+		t.Error("dangerous_mode should default to false")
+	}
+	if config.Claude.AllowDangerousMode {
+		t.Error("allow_dangerous_mode should default to false")
+	}
+	if config.Claude.PermissionMode != "" {
+		t.Errorf("permission_mode should default to empty, got %q", config.Claude.PermissionMode)
+	}
+}
+
 func TestGetNotificationsSettings_PartialConfig(t *testing.T) {
 	// Test that missing fields get defaults
 	tempDir := t.TempDir()

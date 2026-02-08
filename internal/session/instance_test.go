@@ -1707,3 +1707,139 @@ func TestRegenerate_MCPConfig_InvalidatesCache(t *testing.T) {
 			"(cache should have been invalidated), got: %v", localNames2)
 	}
 }
+
+// ============================================================================
+// buildClaudeExtraFlags Permission Tests
+// ============================================================================
+
+// setupConfigForTest writes a config.toml and primes the cache.
+// Returns a cleanup function to restore HOME and clear cache.
+func setupConfigForTest(t *testing.T, configContent string) func() {
+	t.Helper()
+	tempDir := t.TempDir()
+	originalHome := os.Getenv("HOME")
+	os.Setenv("HOME", tempDir)
+
+	agentDeckDir := filepath.Join(tempDir, ".agent-deck")
+	_ = os.MkdirAll(agentDeckDir, 0700)
+	configPath := filepath.Join(agentDeckDir, "config.toml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0600); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+	ClearUserConfigCache()
+
+	return func() {
+		os.Setenv("HOME", originalHome)
+		ClearUserConfigCache()
+	}
+}
+
+func TestBuildClaudeExtraFlags_NoPermissionFlags(t *testing.T) {
+	cleanup := setupConfigForTest(t, `
+[claude]
+`)
+	defer cleanup()
+
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	// No dangerous_mode, no allow_dangerous_mode, no permission_mode
+	if flags != "" {
+		t.Errorf("expected empty flags, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_DangerousMode(t *testing.T) {
+	cleanup := setupConfigForTest(t, `
+[claude]
+dangerous_mode = true
+`)
+	defer cleanup()
+
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	if !strings.Contains(flags, "--dangerously-skip-permissions") {
+		t.Errorf("expected --dangerously-skip-permissions in flags, got %q", flags)
+	}
+	if strings.Contains(flags, "--allow-dangerously-skip-permissions") {
+		t.Errorf("should not contain --allow-... when dangerous_mode is true, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_AllowDangerousMode(t *testing.T) {
+	cleanup := setupConfigForTest(t, `
+[claude]
+dangerous_mode = false
+allow_dangerous_mode = true
+`)
+	defer cleanup()
+
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	if !strings.Contains(flags, "--allow-dangerously-skip-permissions") {
+		t.Errorf("expected --allow-dangerously-skip-permissions in flags, got %q", flags)
+	}
+	if strings.Contains(flags, " --dangerously-skip-permissions") {
+		t.Errorf("should not contain --dangerously-skip-permissions when dangerous_mode=false, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_DangerousWinsOverAllow(t *testing.T) {
+	cleanup := setupConfigForTest(t, `
+[claude]
+dangerous_mode = true
+allow_dangerous_mode = true
+`)
+	defer cleanup()
+
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	if !strings.Contains(flags, "--dangerously-skip-permissions") {
+		t.Errorf("expected --dangerously-skip-permissions, got %q", flags)
+	}
+	if strings.Contains(flags, "--allow-dangerously-skip-permissions") {
+		t.Errorf("dangerous_mode should take precedence over allow_dangerous_mode, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_PermissionMode(t *testing.T) {
+	cleanup := setupConfigForTest(t, `
+[claude]
+permission_mode = "plan"
+`)
+	defer cleanup()
+
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	if !strings.Contains(flags, "--permission-mode plan") {
+		t.Errorf("expected --permission-mode plan in flags, got %q", flags)
+	}
+}
+
+func TestBuildClaudeExtraFlags_AllowWithPermissionMode(t *testing.T) {
+	// This is the "claude-yolo" pattern: allow + permission_mode default
+	cleanup := setupConfigForTest(t, `
+[claude]
+dangerous_mode = false
+allow_dangerous_mode = true
+permission_mode = "default"
+`)
+	defer cleanup()
+
+	inst := &Instance{Tool: "claude"}
+	flags := inst.buildClaudeExtraFlags(nil)
+
+	if !strings.Contains(flags, "--allow-dangerously-skip-permissions") {
+		t.Errorf("expected --allow-dangerously-skip-permissions, got %q", flags)
+	}
+	if !strings.Contains(flags, "--permission-mode default") {
+		t.Errorf("expected --permission-mode default, got %q", flags)
+	}
+	if strings.Contains(flags, " --dangerously-skip-permissions") {
+		t.Errorf("should not contain --dangerously-skip-permissions, got %q", flags)
+	}
+}
